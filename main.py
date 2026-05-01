@@ -13,7 +13,7 @@ HIDENCLOUD = os.getenv("HIDENCLOUD", "")
 TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "")
 TG_CHAT_ID = os.getenv("TG_CHAT_ID", "")
 PROXY_SERVER = os.getenv("PROXY_SERVER", "")
-# 允许通过环境变量手动指定 ID（备用）
+# 💡 强烈建议：在 GitHub Secrets 中添加 SERVER_ID，值为 207359
 MANUAL_SERVER_ID = os.getenv("SERVER_ID", "")
 
 if "-----" in HIDENCLOUD:
@@ -95,57 +95,30 @@ def wait_for_url_contains(driver, keyword, timeout=45):
     return False
 
 
-def check_login_error(driver):
-    """检查页面是否有登录错误信息"""
-    try:
-        error_selectors = [
-            ".text-red-500", ".alert-danger", "[role='alert']", ".error", ".invalid-feedback"
-        ]
-        for sel in error_selectors:
-            elem = driver.find_element(sel, by="css selector")
-            if elem and elem.is_displayed() and elem.text.strip():
-                return elem.text.strip()
-    except:
-        pass
-    return None
-
-
-def mask_email(email):
-    """邮箱脱敏显示"""
-    if '@' in email:
-        local, domain = email.split('@', 1)
-        return f"{local[:3]}***@{domain}"
-    return f"{email[:3]}***"
-
-
-def parse_due_date(text):
-    """将页面显示的日期字符串转换为 YYYY-MM-DD 格式"""
-    if not text:
-        return None
-    # 格式: "28 Apr 2026"
-    match = re.search(r'(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})', text)
-    if match:
-        day, month_str, year = match.groups()
-        try:
-            dt = datetime.strptime(f"{day} {month_str} {year}", "%d %b %Y")
-            return dt.strftime("%Y-%m-%d")
-        except:
-            pass
-    # 已经是标准格式
-    if re.match(r'\d{4}-\d{2}-\d{2}', text):
-        return text
-    return None
-
-
 def get_current_due_date(driver):
-    """获取当前管理页面的到期时间，返回原始字符串和标准化日期"""
+    """获取当前管理页面的到期时间"""
     try:
-        due_elem = driver.find_element(
-            "xpath", "//h6[contains(text(),'Due date')]/following-sibling::div"
-        )
-        raw = due_elem.text.strip()
-        std = parse_due_date(raw)
-        return raw, std
+        # 尝试多种可能的 Due Date 定位器
+        selectors = [
+            "//h6[contains(text(),'Due date')]/following-sibling::div",
+            "//div[contains(text(),'Due date')]/following-sibling::div",
+            "//p[contains(text(),'Due date')]/following-sibling::p"
+        ]
+        for sel in selectors:
+            try:
+                due_elem = driver.find_element("xpath", sel)
+                raw = due_elem.text.strip()
+                if raw:
+                    # 解析日期格式: "01 May 2026"
+                    match = re.search(r'(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})', raw)
+                    if match:
+                        day, month_str, year = match.groups()
+                        dt = datetime.strptime(f"{day} {month_str} {year}", "%d %b %Y")
+                        return raw, dt.strftime("%Y-%m-%d")
+                    return raw, raw
+            except:
+                continue
+        return "N/A", None
     except:
         return "N/A", None
 
@@ -153,12 +126,9 @@ def get_current_due_date(driver):
 # ====================== 主逻辑 ======================
 def main():
     print("[INFO] " + "=" * 50)
-    print("[INFO] HidenCloud 自动续期脚本 (SeleniumBase) - JavaScript Inject Fix")
+    print("[INFO] HidenCloud 自动续期脚本 (SeleniumBase) - Final Stability Version")
     print("[INFO] " + "=" * 50)
-    print(f"[INFO] 📂 状态目录: {USER_DATA_DIR}")
-    print(f"[INFO] 📸 截图目录: {SCREENSHOT_DIR}")
 
-    # ---------- 浏览器驱动配置 ----------
     driver_kwargs = {
         "headless": True,
         "headless2": True,
@@ -173,283 +143,161 @@ def main():
         print(f"[INFO] 🌐 使用代理: {PROXY_SERVER}")
 
     driver = Driver(**driver_kwargs)
-    driver.set_page_load_timeout(60)
-    driver.set_script_timeout(60)
-
-    try:
-        driver.get("about:blank")
-    except Exception as e:
-        print(f"[WARN] 访问 about:blank 失败（可忽略）: {e}")
-
-    time.sleep(2)
-
-    final_screenshot = None
-    result_status = "❌ 续订失败"
-    due_date_before_raw = "N/A"
-    due_date_before_std = None
-    due_date_after_raw = "N/A"
-    due_date_after_std = None
-    sid = None
 
     try:
         # ---------- 1. 访问主页 ----------
         print(f"[INFO] 🌐 访问主页: {BASE_URL}/dashboard")
         driver.get(f"{BASE_URL}/dashboard")
-        time.sleep(3)
+        time.sleep(5)
         take_screenshot(driver, "01-initial")
 
         # ---------- 2. 登录判断 ----------
         if "/auth/login" in driver.current_url or driver.is_element_visible("input#username"):
             print("[INFO] 🔒 检测到未登录，开始登录流程")
-            take_screenshot(driver, "02-login-page")
-
-            masked_email = mask_email(HIDEN_EMAIL)
-            print(f"[INFO] ✍️ 填写邮箱: {masked_email}")
             driver.type("input#username", HIDEN_EMAIL)
             driver.type("input#password", HIDEN_PWD)
-            take_screenshot(driver, "03-credentials-filled")
-
-            print("[INFO] ⏳ 等待 Turnstile 加载...")
-            time.sleep(5)
+            time.sleep(2)
 
             if driver.is_element_present(".cf-turnstile"):
-                print("[INFO] 鼠标点击 Turnstile...")
-                try:
-                    driver.uc_gui_click_cf(".cf-turnstile")
-                except:
-                    driver.click(".cf-turnstile")
-                take_screenshot(driver, "04-turnstile-clicked")
-
-                if not wait_for_turnstile_token(driver, timeout=90):
-                    take_screenshot(driver, "ERROR-turnstile-timeout")
+                print("[INFO] 🖱️ 尝试点击 Turnstile...")
+                driver.uc_gui_click_cf(".cf-turnstile")
+                if not wait_for_turnstile_token(driver):
                     raise Exception("Turnstile 验证超时")
-                take_screenshot(driver, "05-token-ready")
-            else:
-                print("[WARN] 未找到 Turnstile 元素，继续提交...")
-
-            print("[INFO] 🚀 提交登录表单")
+            
             driver.click("button[type='submit']")
-            take_screenshot(driver, "06-login-submitted")
-
-            print("[INFO] ⏳ 等待登录跳转...")
             if not wait_for_url_contains(driver, "/dashboard", timeout=45):
-                error_text = check_login_error(driver)
-                if error_text:
-                    print(f"[ERROR] 登录失败: {error_text}")
-                    raise Exception(f"登录失败: {error_text}")
-                else:
-                    time.sleep(5)
-                    if "/dashboard" not in driver.current_url:
-                        raise Exception("登录后卡住，未跳转")
-
+                raise Exception("登录跳转失败")
             print("[INFO] ✅ 登录成功")
-            take_screenshot(driver, "07-login-success")
         else:
-            print("[INFO] ✅ 已登录，跳过登录流程")
-            take_screenshot(driver, "02-already-logged-in")
+            print("[INFO] ✅ 已经处于登录状态")
 
-        # ---------- 3. 提取服务器 ID (同步 F12 成功的逻辑) ----------
+        # ---------- 3. 提取服务器 ID ----------
+        sid = None
         if MANUAL_SERVER_ID:
             sid = MANUAL_SERVER_ID
-            print(f"[INFO] 🔧 使用手动指定的 ID: {sid}")
+            print(f"[INFO] 🔧 使用手动指定的服务器 ID: {sid}")
         else:
-            print("[INFO] 🔍 正在注入 JS 脚本提取服务器 ID...")
-            # 增加等待时间，确保动态表格加载
-            time.sleep(10)
+            print("[INFO] 🔍 正在尝试多种方式提取服务器 ID...")
+            time.sleep(12) # 给够充足的渲染时间
             take_screenshot(driver, "08-dashboard")
 
-            # 直接在浏览器中执行你提供的成功的 JS 脚本逻辑
+            # 方式 A: 执行 JS 脚本 (最强力)
             sid = driver.execute_script("""
-                let match = document.body.innerHTML.match(/\\/service\\/(\\d+)\\/manage/);
-                if (match) return match[1];
-                
-                let textMatch = document.body.innerText.match(/Free Server #(\\d+)/);
-                if (textMatch) return textMatch[1];
-                
-                let rowMatch = document.querySelector('tr[id*="table-column-body-"]');
-                if (rowMatch) return rowMatch.id.replace('table-column-body-', '');
-                
+                const links = Array.from(document.querySelectorAll('a[href*="/service/"]'));
+                for (let a of links) {
+                    let m = a.href.match(/\/service\/(\\d+)/);
+                    if (m) return m[1];
+                }
+                const rows = document.querySelector('tr[id*="table-column-body-"]');
+                if (rows) return rows.id.match(/\\d+/)[0];
                 return null;
             """)
 
+            # 方式 B: Python 正则二次扫描
+            if not sid:
+                print("[INFO] JS 提取失败，尝试正则扫描页面源码...")
+                source = driver.page_source
+                match = re.search(r'/service/(\d+)', source)
+                if match:
+                    sid = match.group(1)
+            
             if sid:
-                print(f"[INFO] ✅ JS 提取成功，ID: {sid}")
+                print(f"[INFO] ✅ 成功提取到服务器 ID: {sid}")
             else:
-                # 最后的兜底方案：直接用 Python 正则搜源码
-                print("[INFO] ⚠️ JS 提取失败，尝试 Python 正则扫描源码...")
-                source_match = re.search(r'/service/(\d+)/manage', driver.page_source)
-                if source_match:
-                    sid = source_match.group(1)
-                    print(f"[INFO] ✅ Python 正则提取成功，ID: {sid}")
+                print(f"[DEBUG] 页面标题: {driver.title}")
+                print(f"[DEBUG] 页面部分内容: {driver.find_element('tag name', 'body').text[:300]}...")
+                raise Exception("无法自动提取服务器 ID。请在 GitHub Secrets 中添加 SERVER_ID 变量。")
 
-        if not sid:
-            take_screenshot(driver, "ERROR-no-server-id")
-            raise Exception("无法提取服务器 ID，请确认账号内是否有活跃服务器。")
-
+        # ---------- 4. 进入管理页面并续期 ----------
         manage_url = f"{BASE_URL}/service/{sid}/manage"
-        print(f"[INFO] 🚀 访问管理页面: {manage_url}")
+        print(f"[INFO] 🚀 进入管理页面: {manage_url}")
         driver.get(manage_url)
         time.sleep(5)
         take_screenshot(driver, "09-manage-page")
 
-        # ---------- 4. 获取续订前到期时间 ----------
-        due_date_before_raw, due_date_before_std = get_current_due_date(driver)
-        print(f"[INFO] 续订前到期时间: {due_date_before_raw}")
+        due_before_raw, due_before_std = get_current_due_date(driver)
+        print(f"[INFO] 续期前到期时间: {due_before_raw}")
 
-        # ---------- 5. 续期操作 ----------
-        renew_executed = False
-        restricted = False
-        days_left = None
-        threshold = None
-
+        # 查找 Renew 按钮
+        print("[INFO] 🔄 查找 Renew 按钮...")
+        renew_btn = None
         try:
-            print("[INFO] 🔄 查找并点击 Renew 按钮...")
+            renew_btn = driver.find_element("xpath", "//button[contains(.,'Renew')]")
+        except:
+            # 备选定位
+            renew_btn = driver.find_element("css selector", "button[onclick*='showRenewAlert']")
 
-            # 定位 Renew 按钮
-            renew_btn = None
-            selectors = [
-                ("css selector", "button[onclick*='showRenewAlert']"),
-                ("xpath", "//button[.//i[contains(@class, 'bx-recycle')]]"),
-                ("xpath", "//button[contains(text(),'Renew')]"),
-            ]
-            for by, value in selectors:
-                try:
-                    renew_btn = driver.find_element(by, value)
-                    if renew_btn.is_displayed():
-                        break
-                except:
-                    continue
+        if not renew_btn:
+            raise Exception("未找到 Renew 按钮")
 
-            if not renew_btn:
-                take_screenshot(driver, "ERROR-renew-button-not-found")
-                raise Exception("页面上未找到 Renew 按钮")
+        # 获取续期限制信息
+        onclick_val = renew_btn.get_attribute("onclick") or ""
+        days_left = None
+        param_match = re.search(r'showRenewAlert\((\d+)', onclick_val)
+        if param_match:
+            days_left = int(param_match.group(1))
+            print(f"[INFO] 当前剩余天数: {days_left}")
 
-            # 提取 onclick 属性
-            onclick_val = renew_btn.get_attribute("onclick") or ""
-            print(f"[INFO] Renew 按钮 onclick: {onclick_val}")
+        # 点击 Renew
+        renew_btn.click()
+        time.sleep(3)
+        take_screenshot(driver, "10-renew-clicked")
 
-            param_match = re.search(
-                r'showRenewAlert\((\d+),\s*(\d+),\s*(true|false)\)', onclick_val
-            )
-            if param_match:
-                days_left = int(param_match.group(1))
-                threshold = int(param_match.group(2))
-                print(f"[INFO] 到期剩余: {days_left} 天, 续期阈值: ≤{threshold} 天")
-
-            # 点击 Renew 按钮
-            renew_btn.click()
-            renew_executed = True
-            print("[INFO] ✅ Renew 按钮已点击")
-            time.sleep(3)
-            take_screenshot(driver, "10-renew-clicked")
-
-            time.sleep(1)
-
-            # 检测限制弹窗
-            restriction_h3 = driver.execute_script(
-                "var el = document.querySelector('.fixed.inset-0 h3');"
-                "return el ? el.textContent.trim() : '';"
-            )
-            if 'Renewal Restricted' in restriction_h3:
-                restricted = True
-                alert_text = driver.execute_script(
-                    "var el = document.querySelector('.fixed.inset-0 p');"
-                    "return el ? el.textContent.trim() : '';"
-                )
-                print(f"[INFO] ⚠️ 触发限制弹窗: {alert_text}")
-                take_screenshot(driver, "11-renewal-restricted-popup")
-
-                try:
-                    ok_btn = driver.find_element("xpath", "//button[contains(text(),'OK')]")
-                    ok_btn.click()
-                    time.sleep(1)
-                except:
-                    pass
-            else:
-                # 正常续期流程
-                print("[INFO] 📦 等待续期模态框...")
-                modal_selector = f"div#renewService-{sid}"
-                driver.wait_for_element_visible(modal_selector, timeout=10)
-                take_screenshot(driver, "11-renew-modal-opened")
-
-                print("[INFO] 📦 点击 Create Invoice...")
-                submit_btn = driver.find_element(by="css selector", value=f"{modal_selector} button[type='submit']")
-                submit_btn.click()
-                time.sleep(3)
-                take_screenshot(driver, "12-invoice-created")
-
-                print("[INFO] 💳 等待支付页面...")
-                time.sleep(5)
-                take_screenshot(driver, "13-invoice-page")
-
-                # 滚动到底部
-                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                time.sleep(1)
-                take_screenshot(driver, "14-scrolled-to-bottom")
-
-                print("[INFO] ✅ 尝试点击 Pay 按钮")
-                pay_clicked = driver.execute_script("""
-                    var btn = document.querySelector('button[type="submit"]');
-                    if(btn && btn.innerText.includes('Pay')) {
-                        btn.click();
-                        return true;
-                    }
-                    return false;
-                """)
-
-                if pay_clicked:
-                    print("[INFO] ⏳ 等待支付完成...")
-                    time.sleep(5)
-                    take_screenshot(driver, "15-pay-clicked")
-                else:
-                    print("[WARN] 未找到 Pay 按钮")
-
-        except Exception as e:
-            print(f"[ERROR] ❌ 续期过程出错: {e}")
-            take_screenshot(driver, "ERROR-renew-process")
-            raise e
-
-        # ---------- 6. 获取续订后到期时间 ----------
-        driver.get(manage_url)
-        time.sleep(5)
-        due_date_after_raw, due_date_after_std = get_current_due_date(driver)
-        print(f"[INFO] 续订后到期时间: {due_date_after_raw}")
-        final_screenshot = take_screenshot(driver, "16-final-due-date")
-
-        # ---------- 7. 判断结果状态 ----------
-        if restricted:
+        # 判断是否被限制续期
+        is_restricted = driver.execute_script("return document.body.innerText.includes('Renewal Restricted')")
+        
+        if is_restricted:
+            print("[INFO] ℹ️ 触发续期限制，目前无需续期。")
             result_status = "ℹ️ 暂无可续期"
-        elif due_date_before_std and due_date_after_std:
-            if due_date_after_std > due_date_before_std:
+            due_after_raw = due_before_raw
+            due_after_std = due_before_std
+        else:
+            print("[INFO] 📦 正在处理续期订单...")
+            # 处理模态框提交
+            driver.execute_script(f"document.querySelector('div#renewService-{sid} button[type=\"submit\"]').click()")
+            time.sleep(5)
+            take_screenshot(driver, "12-invoice-created")
+            
+            # 支付页面处理 (针对免费服务通常会自动完成，或者点击 Pay 按钮)
+            try:
+                pay_btn = driver.find_element("xpath", "//button[contains(.,'Pay')]")
+                pay_btn.click()
+                time.sleep(5)
+                print("[INFO] ✅ 已点击支付按钮")
+            except:
+                print("[INFO] 未发现支付按钮，可能已自动完成")
+
+            # 刷新页面看最终结果
+            driver.get(manage_url)
+            time.sleep(5)
+            due_after_raw, due_after_std = get_current_due_date(driver)
+            
+            if due_after_std and due_before_std and due_after_std > due_before_std:
                 result_status = "✅ 续订成功"
             else:
-                result_status = "❌ 续订失败"
-        else:
-            result_status = "⚠️ 续期已执行，请确认"
+                result_status = "⚠️ 已执行续期，请检查日期"
 
-        # 输出标准到期时间，供 GitHub Actions 提取更新 Cron
-        if due_date_after_std:
-            print(f"到期时间(标准): {due_date_after_std}")
-
-        # ---------- 8. 发送 TG 通知 ----------
+        # ---------- 5. 结果输出与通知 ----------
+        print(f"到期时间(标准): {due_after_std or due_after_raw}")
         bj_time = get_bj_time()
-        tg_caption = (
+        
+        tg_msg = (
             f"{result_status}\n\n"
             f"账号: `{HIDEN_EMAIL}`\n"
             f"服务器: `Free Server #{sid}`\n"
-            f"到期: {due_date_after_raw}\n"
-            f"时间: {bj_time}\n\n"
-            f"HidenCloud Auto Renew"
+            f"到期: {due_after_raw}\n"
+            f"时间: {bj_time}"
         )
-        send_tg_notification(tg_caption, photo_path=final_screenshot)
+        send_tg_notification(tg_msg, photo_path=take_screenshot(driver, "16-final"))
+        print(f"[INFO] 🎉 任务完成: {result_status}")
 
     except Exception as e:
         print(f"[ERROR] ❌ 脚本执行失败: {e}")
-        send_tg_notification(f"❌ HidenCloud 续期失败\n账号: {HIDEN_EMAIL}\n错误: {str(e)[:100]}")
+        take_screenshot(driver, "CRITICAL-ERROR")
+        send_tg_notification(f"❌ HidenCloud 续期失败\n错误: {str(e)[:100]}")
         raise
     finally:
         driver.quit()
-
 
 if __name__ == "__main__":
     main()
