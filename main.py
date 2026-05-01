@@ -4,7 +4,6 @@
 import os
 import re
 import time
-import shutil
 import requests
 from datetime import datetime, timezone, timedelta
 from seleniumbase import Driver
@@ -14,7 +13,6 @@ HIDENCLOUD = os.getenv("HIDENCLOUD", "")
 TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "")
 TG_CHAT_ID = os.getenv("TG_CHAT_ID", "")
 PROXY_SERVER = os.getenv("PROXY_SERVER", "")
-# 优先读取手动配置的 ID (GitHub Secrets 中的 SERVER_ID)
 MANUAL_SERVER_ID = os.getenv("SERVER_ID", "")
 
 if "-----" in HIDENCLOUD:
@@ -33,16 +31,14 @@ USER_DATA_DIR = os.path.abspath(os.path.join(STATE_DIR, "selenium_profile"))
 
 # ====================== 工具函数 ======================
 def clean_profile():
-    """在脚本内部清理浏览器残留锁文件"""
+    """清理浏览器锁文件"""
     if os.path.exists(USER_DATA_DIR):
-        print(f"[INFO] 🧹 正在清理配置目录锁文件: {USER_DATA_DIR}")
+        print(f"[INFO] 🧹 正在清理锁文件...")
         for root, dirs, files in os.walk(USER_DATA_DIR):
             for name in files:
                 if name in ["SingletonLock", "SingletonSocket", "SingletonCookie"]:
-                    try:
-                        os.remove(os.path.join(root, name))
-                    except:
-                        pass
+                    try: os.remove(os.path.join(root, name))
+                    except: pass
 
 def get_bj_time():
     return (datetime.now(timezone.utc) + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')
@@ -69,21 +65,19 @@ def take_screenshot(driver, name):
 # ====================== 主逻辑 ======================
 def main():
     print("[INFO] " + "=" * 50)
-    print("[INFO] HidenCloud 自动续期脚本 (GitHub Actions Optimized)")
+    print("[INFO] HidenCloud 自动续期脚本 (Session Fix Build)")
     print("[INFO] " + "=" * 50)
 
-    # 启动前清理锁
     clean_profile()
 
     # ---------- 浏览器驱动配置 ----------
-    # 针对 GitHub Actions 的 session not created 报错进行了针对性优化
+    # 只保留 Driver() 明确支持的关键字
     driver_kwargs = {
-        "uc": True,                # 启用隐身模式
-        "headless": True,          # 必须开启无头
+        "uc": True,
+        "headless": True,
         "user_data_dir": USER_DATA_DIR,
-        "no_sandbox": True,        # ❗ 关键：解决权限问题
-        "disable_dev_shm_usage": True, # ❗ 关键：解决内存分配问题
         "window_size": "1366,768",
+        # 使用真实的 Chrome 版本号
         "agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     }
     
@@ -91,7 +85,8 @@ def main():
         driver_kwargs["proxy"] = PROXY_SERVER
         print(f"[INFO] 🌐 使用代理: {PROXY_SERVER}")
 
-    print("[INFO] 🚀 正在启动浏览器...")
+    print("[INFO] 🚀 正在尝试初始化浏览器...")
+    # 第一次尝试可能会因为 UC 模式初始化慢而失败，这里通常 seleniumbase 会自动处理
     driver = Driver(**driver_kwargs)
     driver.set_page_load_timeout(60)
 
@@ -100,26 +95,29 @@ def main():
         dashboard_url = f"{BASE_URL}/dashboard"
         print(f"[INFO] 🌐 访问主页: {dashboard_url}")
         
-        # 使用重连模式打开，绕过 CF
-        driver.uc_open_with_reconnect(dashboard_url, reconnect_time=10)
+        # 使用 uc_open_with_reconnect 是绕过 Cloudflare 并解决 Session 问题的最稳妥方式
+        driver.uc_open_with_reconnect(dashboard_url, reconnect_time=12)
         time.sleep(8)
         take_screenshot(driver, "01-initial")
 
         # ---------- 2. 登录判断 ----------
-        if "/auth/login" in driver.current_url or driver.is_element_visible("input#username"):
-            print("[INFO] 🔒 检测到未登录，执行登录...")
-            driver.type("input#username", HIDEN_EMAIL)
-            driver.type("input#password", HIDEN_PWD)
-            
-            if driver.is_element_present(".cf-turnstile"):
-                print("[INFO] 🖱️ 点击 Turnstile...")
-                driver.uc_gui_click_cf(".cf-turnstile")
-                time.sleep(5)
-            
-            driver.click("button[type='submit']")
-            time.sleep(10)
+        # 检查是否真的加载了页面内容
+        if "Services" not in driver.page_source:
+             print("[INFO] 🔒 未检测到登录特征，尝试执行登录...")
+             driver.get(f"{BASE_URL}/auth/login")
+             time.sleep(5)
+             driver.type("input#username", HIDEN_EMAIL)
+             driver.type("input#password", HIDEN_PWD)
+             
+             if driver.is_element_present(".cf-turnstile"):
+                 print("[INFO] 🖱️ 点击 Turnstile...")
+                 driver.uc_gui_click_cf(".cf-turnstile")
+                 time.sleep(6)
+             
+             driver.click("button[type='submit']")
+             time.sleep(10)
         else:
-            print("[INFO] ✅ 已登录")
+            print("[INFO] ✅ 登录状态有效")
 
         # ---------- 3. 提取服务器 ID ----------
         sid = MANUAL_SERVER_ID
@@ -151,7 +149,7 @@ def main():
             driver.execute_script("arguments[0].click();", renew_btn)
             time.sleep(5)
         except:
-            raise Exception("未找到 Renew 按钮")
+            raise Exception("页面未找到 Renew 按钮")
 
         if "Renewal Restricted" in driver.page_source:
             res_status = "ℹ️ 暂无可续期"
@@ -174,13 +172,13 @@ def main():
             return h ? h.nextElementSibling.innerText.trim() : 'N/A';
         """)
         
-        # 输出标准时间供 Cron 脚本更新
+        # 结果匹配用于 GitHub Actions 提取
         std_m = re.search(r'(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})', final_due)
         if std_m:
             dt = datetime.strptime(f"{std_m.group(1)} {std_m.group(2)} {std_m.group(3)}", "%d %b %Y")
             print(f"到期时间(标准): {dt.strftime('%Y-%m-%d')}")
 
-        send_tg_notification(f"{res_status}\n账号: `{HIDEN_EMAIL}`\n到期: {final_due}", 
+        send_tg_notification(f"{res_status}\n账号: `{HIDEN_EMAIL}`\n到期: {final_due}\n时间: {get_bj_time()}", 
                              photo_path=take_screenshot(driver, "final"))
 
     except Exception as e:
