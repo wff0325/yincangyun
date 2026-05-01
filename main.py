@@ -13,7 +13,7 @@ HIDENCLOUD = os.getenv("HIDENCLOUD", "")
 TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "")
 TG_CHAT_ID = os.getenv("TG_CHAT_ID", "")
 PROXY_SERVER = os.getenv("PROXY_SERVER", "")
-# 支持手动指定服务器 ID
+# 允许通过环境变量手动指定 ID（备用）
 MANUAL_SERVER_ID = os.getenv("SERVER_ID", "")
 
 if "-----" in HIDENCLOUD:
@@ -153,7 +153,7 @@ def get_current_due_date(driver):
 # ====================== 主逻辑 ======================
 def main():
     print("[INFO] " + "=" * 50)
-    print("[INFO] HidenCloud 自动续期脚本 (SeleniumBase) - Final Fix")
+    print("[INFO] HidenCloud 自动续期脚本 (SeleniumBase) - JavaScript Inject Fix")
     print("[INFO] " + "=" * 50)
     print(f"[INFO] 📂 状态目录: {USER_DATA_DIR}")
     print(f"[INFO] 📸 截图目录: {SCREENSHOT_DIR}")
@@ -213,7 +213,7 @@ def main():
             time.sleep(5)
 
             if driver.is_element_present(".cf-turnstile"):
-                print("[INFO] 鼠标尝试点击 Turnstile...")
+                print("[INFO] 鼠标点击 Turnstile...")
                 try:
                     driver.uc_gui_click_cf(".cf-turnstile")
                 except:
@@ -236,12 +236,10 @@ def main():
                 error_text = check_login_error(driver)
                 if error_text:
                     print(f"[ERROR] 登录失败: {error_text}")
-                    take_screenshot(driver, "ERROR-login-failed-message")
                     raise Exception(f"登录失败: {error_text}")
                 else:
                     time.sleep(5)
                     if "/dashboard" not in driver.current_url:
-                        take_screenshot(driver, "ERROR-login-stuck")
                         raise Exception("登录后卡住，未跳转")
 
             print("[INFO] ✅ 登录成功")
@@ -250,47 +248,43 @@ def main():
             print("[INFO] ✅ 已登录，跳过登录流程")
             take_screenshot(driver, "02-already-logged-in")
 
-        # ---------- 3. 提取服务器 ID (针对折叠面板深度优化) ----------
+        # ---------- 3. 提取服务器 ID (同步 F12 成功的逻辑) ----------
         if MANUAL_SERVER_ID:
             sid = MANUAL_SERVER_ID
-            print(f"[INFO] 🔧 使用手动指定的服务器 ID: {sid}")
+            print(f"[INFO] 🔧 使用手动指定的 ID: {sid}")
         else:
-            print("[INFO] 🔍 尝试自动提取服务器 ID...")
-            time.sleep(8)  # 给足够的加载时间
+            print("[INFO] 🔍 正在注入 JS 脚本提取服务器 ID...")
+            # 增加等待时间，确保动态表格加载
+            time.sleep(10)
             take_screenshot(driver, "08-dashboard")
 
-            # 方法 1：从页面全量源码提取 (无视折叠状态)
-            page_source = driver.page_source
-            # 匹配 /service/207359/manage
-            id_match = re.search(r'/service/(\d+)/manage', page_source)
-            if id_match:
-                sid = id_match.group(1)
-                print(f"[INFO] ✅ 成功从源码 Regex 提取到 ID: {sid}")
-            
-            # 方法 2：备选，匹配文本 Free Server #207359
-            if not sid:
-                text_match = re.search(r'Free Server #(\d+)', page_source)
-                if text_match:
-                    sid = text_match.group(1)
-                    print(f"[INFO] ✅ 成功从文本 Regex 提取到 ID: {sid}")
+            # 直接在浏览器中执行你提供的成功的 JS 脚本逻辑
+            sid = driver.execute_script("""
+                let match = document.body.innerHTML.match(/\\/service\\/(\\d+)\\/manage/);
+                if (match) return match[1];
+                
+                let textMatch = document.body.innerText.match(/Free Server #(\\d+)/);
+                if (textMatch) return textMatch[1];
+                
+                let rowMatch = document.querySelector('tr[id*="table-column-body-"]');
+                if (rowMatch) return rowMatch.id.replace('table-column-body-', '');
+                
+                return null;
+            """)
 
-            # 方法 3：备选，模拟点击展开折叠面板
-            if not sid:
-                try:
-                    # 寻找折叠行的触发器并点击
-                    trigger = driver.find_element("css selector", "tr[id^='table-column-header-']")
-                    driver.execute_script("arguments[0].click();", trigger)
-                    time.sleep(2)
-                    manage_link = driver.find_element("css selector", "a[href*='/service/'][href*='/manage']")
-                    href = manage_link.get_attribute("href")
-                    sid = re.search(r'/service/(\d+)', href).group(1)
-                    print(f"[INFO] ✅ 展开折叠面板后提取到 ID: {sid}")
-                except:
-                    pass
+            if sid:
+                print(f"[INFO] ✅ JS 提取成功，ID: {sid}")
+            else:
+                # 最后的兜底方案：直接用 Python 正则搜源码
+                print("[INFO] ⚠️ JS 提取失败，尝试 Python 正则扫描源码...")
+                source_match = re.search(r'/service/(\d+)/manage', driver.page_source)
+                if source_match:
+                    sid = source_match.group(1)
+                    print(f"[INFO] ✅ Python 正则提取成功，ID: {sid}")
 
         if not sid:
             take_screenshot(driver, "ERROR-no-server-id")
-            raise Exception("无法提取服务器 ID，请在 Secrets 中手动配置 SERVER_ID")
+            raise Exception("无法提取服务器 ID，请确认账号内是否有活跃服务器。")
 
         manage_url = f"{BASE_URL}/service/{sid}/manage"
         print(f"[INFO] 🚀 访问管理页面: {manage_url}")
@@ -340,8 +334,7 @@ def main():
             if param_match:
                 days_left = int(param_match.group(1))
                 threshold = int(param_match.group(2))
-                is_free = param_match.group(3) == "true"
-                print(f"[INFO] 到期剩余: {days_left} 天, 续期阈值: ≤{threshold} 天, 免费服务: {is_free}")
+                print(f"[INFO] 到期剩余: {days_left} 天, 续期阈值: ≤{threshold} 天")
 
             # 点击 Renew 按钮
             renew_btn.click()
@@ -370,7 +363,6 @@ def main():
                     ok_btn = driver.find_element("xpath", "//button[contains(text(),'OK')]")
                     ok_btn.click()
                     time.sleep(1)
-                    print("[INFO] 已关闭限制弹窗")
                 except:
                     pass
             else:
@@ -395,7 +387,7 @@ def main():
                 time.sleep(1)
                 take_screenshot(driver, "14-scrolled-to-bottom")
 
-                print("[INFO] ✅ Pay 按钮已点击")
+                print("[INFO] ✅ 尝试点击 Pay 按钮")
                 pay_clicked = driver.execute_script("""
                     var btn = document.querySelector('button[type="submit"]');
                     if(btn && btn.innerText.includes('Pay')) {
@@ -410,8 +402,7 @@ def main():
                     time.sleep(5)
                     take_screenshot(driver, "15-pay-clicked")
                 else:
-                    print("[WARN] 未找到 Pay 按钮，可能免费服务自动完成")
-                    take_screenshot(driver, "15-no-pay-button")
+                    print("[WARN] 未找到 Pay 按钮")
 
         except Exception as e:
             print(f"[ERROR] ❌ 续期过程出错: {e}")
@@ -425,57 +416,36 @@ def main():
         print(f"[INFO] 续订后到期时间: {due_date_after_raw}")
         final_screenshot = take_screenshot(driver, "16-final-due-date")
 
-        if due_date_after_std:
-            print(f"到期时间(标准): {due_date_after_std}")
-        else:
-            print(f"到期时间(标准): {due_date_after_raw}")
-
         # ---------- 7. 判断结果状态 ----------
-        if restricted and not renew_executed:
-            result_status = "ℹ️ 暂无可续期"
-        elif restricted and renew_executed:
+        if restricted:
             result_status = "ℹ️ 暂无可续期"
         elif due_date_before_std and due_date_after_std:
             if due_date_after_std > due_date_before_std:
                 result_status = "✅ 续订成功"
             else:
                 result_status = "❌ 续订失败"
-        elif renew_executed and not restricted:
-            result_status = "⚠️ 续期已执行，请确认"
         else:
-            result_status = "❌ 续订失败"
+            result_status = "⚠️ 续期已执行，请确认"
+
+        # 输出标准到期时间，供 GitHub Actions 提取更新 Cron
+        if due_date_after_std:
+            print(f"到期时间(标准): {due_date_after_std}")
 
         # ---------- 8. 发送 TG 通知 ----------
         bj_time = get_bj_time()
-        change_info = ""
-        if due_date_before_raw != "N/A" and due_date_after_raw != "N/A":
-            if due_date_before_raw == due_date_after_raw:
-                change_info = due_date_after_raw
-            else:
-                change_info = f"{due_date_before_raw} → {due_date_after_raw}"
-        else:
-            change_info = due_date_after_raw
-
-        extra_info = ""
-        if restricted and days_left is not None and threshold is not None:
-            extra_info = f"\n剩余: {days_left} 天 (需 ≤{threshold} 天可续)"
-
         tg_caption = (
             f"{result_status}\n\n"
             f"账号: `{HIDEN_EMAIL}`\n"
             f"服务器: `Free Server #{sid}`\n"
-            f"到期: {change_info}{extra_info}\n"
+            f"到期: {due_date_after_raw}\n"
             f"时间: {bj_time}\n\n"
             f"HidenCloud Auto Renew"
         )
         send_tg_notification(tg_caption, photo_path=final_screenshot)
 
-        print(f"[INFO] 🎉 任务完成 — {result_status}")
-
     except Exception as e:
         print(f"[ERROR] ❌ 脚本执行失败: {e}")
-        take_screenshot(driver, "CRITICAL-ERROR")
-        send_tg_notification(f"❌ HidenCloud 续期失败\n错误: {str(e)[:100]}")
+        send_tg_notification(f"❌ HidenCloud 续期失败\n账号: {HIDEN_EMAIL}\n错误: {str(e)[:100]}")
         raise
     finally:
         driver.quit()
