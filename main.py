@@ -13,6 +13,8 @@ HIDENCLOUD = os.getenv("HIDENCLOUD", "")
 TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "")
 TG_CHAT_ID = os.getenv("TG_CHAT_ID", "")
 PROXY_SERVER = os.getenv("PROXY_SERVER", "")
+# 支持手动指定服务器 ID
+MANUAL_SERVER_ID = os.getenv("SERVER_ID", "")
 
 if "-----" in HIDENCLOUD:
     HIDEN_EMAIL, HIDEN_PWD = HIDENCLOUD.split("-----", 1)
@@ -151,7 +153,7 @@ def get_current_due_date(driver):
 # ====================== 主逻辑 ======================
 def main():
     print("[INFO] " + "=" * 50)
-    print("[INFO] HidenCloud 自动续期脚本 (SeleniumBase) - Fixed")
+    print("[INFO] HidenCloud 自动续期脚本 (SeleniumBase) - Final Fix")
     print("[INFO] " + "=" * 50)
     print(f"[INFO] 📂 状态目录: {USER_DATA_DIR}")
     print(f"[INFO] 📸 截图目录: {SCREENSHOT_DIR}")
@@ -248,43 +250,52 @@ def main():
             print("[INFO] ✅ 已登录，跳过登录流程")
             take_screenshot(driver, "02-already-logged-in")
 
-        # ---------- 3. 提取服务器 ID ----------
-        print("[INFO] 🔍 提取服务器 ID...")
-        time.sleep(5)  # 增加等待时间确保表格加载完成
-        take_screenshot(driver, "08-dashboard")
+        # ---------- 3. 提取服务器 ID (针对折叠面板深度优化) ----------
+        if MANUAL_SERVER_ID:
+            sid = MANUAL_SERVER_ID
+            print(f"[INFO] 🔧 使用手动指定的服务器 ID: {sid}")
+        else:
+            print("[INFO] 🔍 尝试自动提取服务器 ID...")
+            time.sleep(8)  # 给足够的加载时间
+            take_screenshot(driver, "08-dashboard")
 
-        try:
-            # 优先方案: 寻找包含 /service/xxx/manage 的链接
-            manage_links = driver.find_elements("css selector", "a[href*='/service/'][href*='/manage']")
-            for link in manage_links:
-                href = link.get_attribute("href")
-                match = re.search(r'/service/(\d+)', href)
-                if match:
-                    sid = match.group(1)
-                    print(f"[INFO] ✅ 成功从 Manage 链接提取到 ID: {sid}")
-                    break
+            # 方法 1：从页面全量源码提取 (无视折叠状态)
+            page_source = driver.page_source
+            # 匹配 /service/207359/manage
+            id_match = re.search(r'/service/(\d+)/manage', page_source)
+            if id_match:
+                sid = id_match.group(1)
+                print(f"[INFO] ✅ 成功从源码 Regex 提取到 ID: {sid}")
             
-            # 备选方案: 通过文本提取
+            # 方法 2：备选，匹配文本 Free Server #207359
             if not sid:
-                elements = driver.find_elements("xpath", "//*[contains(text(),'Free Server #')]")
-                for el in elements:
-                    text = el.text.strip()
-                    match = re.search(r'#(\d+)', text)
-                    if match:
-                        sid = match.group(1)
-                        print(f"[INFO] ✅ 成功从文本提取到 ID: {sid}")
-                        break
-        except Exception as e:
-            print(f"[ERROR] 页面元素定位失败: {e}")
+                text_match = re.search(r'Free Server #(\d+)', page_source)
+                if text_match:
+                    sid = text_match.group(1)
+                    print(f"[INFO] ✅ 成功从文本 Regex 提取到 ID: {sid}")
+
+            # 方法 3：备选，模拟点击展开折叠面板
+            if not sid:
+                try:
+                    # 寻找折叠行的触发器并点击
+                    trigger = driver.find_element("css selector", "tr[id^='table-column-header-']")
+                    driver.execute_script("arguments[0].click();", trigger)
+                    time.sleep(2)
+                    manage_link = driver.find_element("css selector", "a[href*='/service/'][href*='/manage']")
+                    href = manage_link.get_attribute("href")
+                    sid = re.search(r'/service/(\d+)', href).group(1)
+                    print(f"[INFO] ✅ 展开折叠面板后提取到 ID: {sid}")
+                except:
+                    pass
 
         if not sid:
             take_screenshot(driver, "ERROR-no-server-id")
-            raise Exception("无法提取服务器 ID")
+            raise Exception("无法提取服务器 ID，请在 Secrets 中手动配置 SERVER_ID")
 
         manage_url = f"{BASE_URL}/service/{sid}/manage"
-        print(f"[INFO] 🚀 访问管理页面: {BASE_URL}/service/***/manage")
+        print(f"[INFO] 🚀 访问管理页面: {manage_url}")
         driver.get(manage_url)
-        time.sleep(3)
+        time.sleep(5)
         take_screenshot(driver, "09-manage-page")
 
         # ---------- 4. 获取续订前到期时间 ----------
@@ -409,7 +420,7 @@ def main():
 
         # ---------- 6. 获取续订后到期时间 ----------
         driver.get(manage_url)
-        time.sleep(3)
+        time.sleep(5)
         due_date_after_raw, due_date_after_std = get_current_due_date(driver)
         print(f"[INFO] 续订后到期时间: {due_date_after_raw}")
         final_screenshot = take_screenshot(driver, "16-final-due-date")
