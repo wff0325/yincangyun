@@ -161,10 +161,11 @@ def main():
         "headless": True,
         "headless2": True,
         "uc": True,
+        "xvfb": True,  # 针对 Linux 环境开启虚拟桌面支持
         "user_data_dir": USER_DATA_DIR,
         "window_size": "1280,753",
         "disable_csp": True,
-        "agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+        "agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     }
     if PROXY_SERVER:
         driver_kwargs["proxy"] = PROXY_SERVER
@@ -250,17 +251,30 @@ def main():
 
         # ---------- 3. 提取服务器 ID ----------
         print("[INFO] 🔍 提取服务器 ID...")
+        time.sleep(5)  # 增加等待时间确保表格加载
         take_screenshot(driver, "08-dashboard")
-        time.sleep(3)
 
         try:
-            element = driver.find_element("xpath", "//span[contains(text(),'Free Server #')]")
-            text = element.text.strip()
-            print("[INFO] 找到服务器文本: Free Server #***")
-            match = re.search(r'Free Server #(\d+)', text)
-            if match:
-                sid = match.group(1)
-                print("[INFO] ✅ 提取到服务器 ID: ***")
+            # 方案 A: 寻找包含 /service/xxx/manage 的链接 (最稳妥)
+            manage_links = driver.find_elements("css selector", "a[href*='/service/'][href*='/manage']")
+            for link in manage_links:
+                href = link.get_attribute("href")
+                match = re.search(r'/service/(\d+)', href)
+                if match:
+                    sid = match.group(1)
+                    print(f"[INFO] ✅ 成功从 Manage 链接提取到 ID: {sid}")
+                    break
+            
+            # 方案 B: 备选方案，通过文本提取
+            if not sid:
+                elements = driver.find_elements("xpath", "//*[contains(text(),'Free Server #')]")
+                for el in elements:
+                    text = el.text.strip()
+                    match = re.search(r'#(\d+)', text)
+                    if match:
+                        sid = match.group(1)
+                        print(f"[INFO] ✅ 成功从文本提取到 ID: {sid}")
+                        break
         except Exception as e:
             print(f"[ERROR] 页面元素定位失败: {e}")
 
@@ -269,7 +283,7 @@ def main():
             raise Exception("无法提取服务器 ID")
 
         manage_url = f"{BASE_URL}/service/{sid}/manage"
-        print(f"[INFO] 🚀 访问管理页面: {BASE_URL}/service/***/manage")
+        print(f"[INFO] 🚀 访问管理页面: {manage_url}")
         driver.get(manage_url)
         time.sleep(3)
         take_screenshot(driver, "09-manage-page")
