@@ -151,7 +151,7 @@ def get_current_due_date(driver):
 # ====================== 主逻辑 ======================
 def main():
     print("[INFO] " + "=" * 50)
-    print("[INFO] HidenCloud 自动续期脚本 (SeleniumBase)")
+    print("[INFO] HidenCloud 自动续期脚本 (SeleniumBase) - Fixed")
     print("[INFO] " + "=" * 50)
     print(f"[INFO] 📂 状态目录: {USER_DATA_DIR}")
     print(f"[INFO] 📸 截图目录: {SCREENSHOT_DIR}")
@@ -161,7 +161,6 @@ def main():
         "headless": True,
         "headless2": True,
         "uc": True,
-        "xvfb": True,  # 针对 Linux 环境开启虚拟桌面支持
         "user_data_dir": USER_DATA_DIR,
         "window_size": "1280,753",
         "disable_csp": True,
@@ -212,7 +211,7 @@ def main():
             time.sleep(5)
 
             if driver.is_element_present(".cf-turnstile"):
-                print("[INFO] 🖱️ 尝试点击 Turnstile...")
+                print("[INFO] 鼠标尝试点击 Turnstile...")
                 try:
                     driver.uc_gui_click_cf(".cf-turnstile")
                 except:
@@ -251,11 +250,11 @@ def main():
 
         # ---------- 3. 提取服务器 ID ----------
         print("[INFO] 🔍 提取服务器 ID...")
-        time.sleep(5)  # 增加等待时间确保表格加载
+        time.sleep(5)  # 增加等待时间确保表格加载完成
         take_screenshot(driver, "08-dashboard")
 
         try:
-            # 方案 A: 寻找包含 /service/xxx/manage 的链接 (最稳妥)
+            # 优先方案: 寻找包含 /service/xxx/manage 的链接
             manage_links = driver.find_elements("css selector", "a[href*='/service/'][href*='/manage']")
             for link in manage_links:
                 href = link.get_attribute("href")
@@ -265,7 +264,7 @@ def main():
                     print(f"[INFO] ✅ 成功从 Manage 链接提取到 ID: {sid}")
                     break
             
-            # 方案 B: 备选方案，通过文本提取
+            # 备选方案: 通过文本提取
             if not sid:
                 elements = driver.find_elements("xpath", "//*[contains(text(),'Free Server #')]")
                 for el in elements:
@@ -283,7 +282,7 @@ def main():
             raise Exception("无法提取服务器 ID")
 
         manage_url = f"{BASE_URL}/service/{sid}/manage"
-        print(f"[INFO] 🚀 访问管理页面: {manage_url}")
+        print(f"[INFO] 🚀 访问管理页面: {BASE_URL}/service/***/manage")
         driver.get(manage_url)
         time.sleep(3)
         take_screenshot(driver, "09-manage-page")
