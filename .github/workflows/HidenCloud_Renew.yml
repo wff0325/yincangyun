@@ -482,12 +482,21 @@ jobs:
 
           echo "::notice::✅ Cron 更新成功"
 
+      # 第一步：先上传截图（确保报错时图片被保存）
+      - name: Upload screenshots
+        if: always()  # 无论成功失败都执行
+        uses: actions/upload-artifact@v4
+        with:
+          name: hidencloud-debug-images
+          path: screenshots/
+          retention-days: 3 # 截图保留3天，不要设为0
+
+      # 第二步：最后再清理运行记录
       - name: 清理运行记录
         if: always()
         uses: Mattraks/delete-workflow-runs@v2
         with:
           token: ${{ github.token }}
           repository: ${{ github.repository }}
-          delete_workflow_pattern: ${{ github.workflow }}
-          retain_days: 0
-          keep_minimum_runs: 2
+          retain_days: 1      # 修改为保留 1 天，别设为 0，否则你刚跑完可能就没了
+          keep_minimum_runs: 3 # 多保留几个最近的记录，方便对比分析
