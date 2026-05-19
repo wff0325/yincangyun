@@ -355,7 +355,6 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           PROXY_SERVER: ${{ env.PROXY_SERVER }}
-          SERVER_ID: ${{ secrets.SERVER_ID }}   # <-- ДОБАВЛЕНА ЭТА СТРОКА
         run: |
           python3 main.py 2>&1 | tee renew.log
 
