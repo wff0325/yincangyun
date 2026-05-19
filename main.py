@@ -1,291 +1,171 @@
+# -*- coding: utf-8 -*-
 import os
-import re
 import time
-import requests
-from datetime import datetime, timezone, timedelta
+import re
+import json
+from datetime import datetime, timedelta
 from seleniumbase import Driver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+import requests
 
-# ====================== 配置区域 ======================
-HIDENCLOUD = os.getenv("HIDENCLOUD", "")
-TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "")
-TG_CHAT_ID = os.getenv("TG_CHAT_ID", "")
-PROXY_SERVER = os.getenv("PROXY_SERVER", "")
+# === Секреты и переменные окружения ===
+HIDENCLOUD = os.environ.get("HIDENCLOUD")
+SERVER_ID = os.environ.get("SERVER_ID")          # ID сервера из секрета
+TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN")
+TG_CHAT_ID = os.environ.get("TG_CHAT_ID")
+PROXY_SERVER = os.environ.get("PROXY_SERVER")    # может быть задан из шага с прокси
 
-if "-----" in HIDENCLOUD:
-    HIDEN_EMAIL, HIDEN_PWD = HIDENCLOUD.split("-----", 1)
-else:
-    raise ValueError("❌ HIDENCLOUD 格式错误，应为 email-----password")
+def send_telegram(message):
+    """Отправка уведомления в Telegram (только ошибки и успех)"""
+    if TG_BOT_TOKEN and TG_CHAT_ID:
+        url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
+        try:
+            requests.post(url, json={"chat_id": TG_CHAT_ID, "text": message}, timeout=10)
+        except Exception:
+            pass
 
-BASE_URL = "https://dash.hidencloud.com"
-STATE_DIR = "browser_state"
-SCREENSHOT_DIR = "screenshots"
+def log(msg, status="info"):
+    """Печать в консоль и отправка в Telegram важных сообщений"""
+    print(msg)
+    if status in ("error", "success"):
+        send_telegram(msg)
 
-os.makedirs(STATE_DIR, exist_ok=True)
-os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+# === Проверка наличия логина/пароля ===
+if not HIDENCLOUD or "-----" not in HIDENCLOUD:
+    log("❌ Ошибка: секрет HIDENCLOUD не задан или неверный формат (нужно email-----пароль)", "error")
+    exit(1)
 
-USER_DATA_DIR = os.path.abspath(os.path.join(STATE_DIR, "selenium_profile"))
+email, password = HIDENCLOUD.split("-----", 1)
+log(f"🔐 Пользователь: {email}")
 
-# --- 核心注入脚本：解决 Shadow DOM 验证码定位问题 ---
-INJECTED_SCRIPT = """
-(function() {
-    if (window.self !== window.top) return;
-    const originalAttachShadow = Element.prototype.attachShadow;
-    Element.prototype.attachShadow = function(init) {
-        const shadowRoot = originalAttachShadow.call(this, init);
-        if (shadowRoot) {
-            const check = () => {
-                const cb = shadowRoot.querySelector('input[type="checkbox"]');
-                if (cb) {
-                    const rect = cb.getBoundingClientRect();
-                    if (rect.width > 0 && rect.height > 0) {
-                        window.__turnstile_coords = {
-                            x: rect.left + rect.width / 2,
-                            y: rect.top + rect.height / 2
-                        };
-                        return true;
-                    }
-                }
-                return false;
-            };
-            const obs = new MutationObserver(() => { if (check()) obs.disconnect(); });
-            obs.observe(shadowRoot, { childList: true, subtree: true });
-        }
-        return shadowRoot;
-    };
-})();
-"""
+# === Настройка браузера (SeleniumBase) ===
+options = {
+    "headless": True,
+    "disable_csp": True,
+    "disable_gpu": True,
+    "no_sandbox": True,
+    "disable_dev_shm_usage": True,
+}
+if PROXY_SERVER:
+    options["proxy"] = PROXY_SERVER
+    log(f"🌐 Используется прокси: {PROXY_SERVER}")
 
-# ====================== 工具函数 (保留原版) ======================
-def get_bj_time():
-    return (datetime.now(timezone.utc) + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')
+driver = None
+try:
+    driver = Driver(browser="chrome", headless=True, **options)
+    wait = WebDriverWait(driver, 20)
+    log("🟡 Запущен браузер, начинаем работу...")
+except Exception as e:
+    log(f"❌ Не удалось запустить браузер: {e}", "error")
+    exit(1)
 
-def send_tg_notification(message, photo_path=None):
-    if not TG_BOT_TOKEN or not TG_CHAT_ID:
-        print("[WARN] 未配置 TG 信息，跳过发送")
-        return
+# === Функция для входа в панель ===
+def login():
+    log("🟡 Загружаем страницу входа...")
+    driver.get("https://freepanel.hidencloud.com/auth/login")
+    time.sleep(2)
+    # Ввод email
+    email_input = wait.until(EC.presence_of_element_located((By.NAME, "email")))
+    email_input.clear()
+    email_input.send_keys(email)
+    # Ввод пароля
+    password_input = driver.find_element(By.NAME, "password")
+    password_input.clear()
+    password_input.send_keys(password)
+    # Нажатие кнопки входа
+    login_button = driver.find_element(By.XPATH, "//button[@type='submit']")
+    login_button.click()
+    time.sleep(3)
+    # Проверка успеха
+    if "dashboard" in driver.current_url:
+        log("✅ Вход выполнен успешно!")
+        return True
+    else:
+        log("❌ Не удалось войти. Проверьте email/пароль.", "error")
+        return False
+
+# === Функция для выбора сервера по ID или автоматически ===
+def select_server():
+    log("🟡 Переходим на страницу со списком серверов...")
+    driver.get("https://freepanel.hidencloud.com/client")
+    time.sleep(3)
+    # Находим все элементы серверов (обычно ссылки вида /server/xxxxx)
+    server_links = driver.find_elements(By.CSS_SELECTOR, "a[href^='/server/']")
+    if not server_links:
+        log("❌ Не найдено ни одного сервера. Возможно, аккаунт пуст или сервер удалён.", "error")
+        return None
+
+    log(f"📋 Найдено серверов: {len(server_links)}")
+    
+    # Если задан SERVER_ID, ищем по нему
+    if SERVER_ID:
+        log(f"🔍 Ищем сервер с ID: {SERVER_ID}")
+        for link in server_links:
+            href = link.get_attribute("href")
+            match = re.search(r'/server/([a-f0-9]+)', href)
+            if match and match.group(1) == SERVER_ID:
+                log(f"✅ Сервер найден: {link.text.strip()} (ID: {SERVER_ID})")
+                return link
+        log(f"❌ Сервер с ID {SERVER_ID} не найден в списке.", "error")
+        return None
+    else:
+        # Иначе берём первый сервер
+        log("🟡 SERVER_ID не задан, берём первый сервер из списка.")
+        return server_links[0]
+
+# === Функция продления ===
+def renew_server(server_link):
+    log("🟡 Открываем страницу управления сервером...")
+    server_link.click()
+    time.sleep(3)
+    # Ищем кнопку продления (Renew)
     try:
-        if photo_path and os.path.exists(photo_path):
-            url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendPhoto"
-            with open(photo_path, 'rb') as f:
-                requests.post(url, files={'photo': f}, data={'chat_id': TG_CHAT_ID, 'caption': message, 'parse_mode': 'Markdown'}, timeout=30)
-        else:
-            url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
-            requests.post(url, json={"chat_id": TG_CHAT_ID, "text": message, "parse_mode": "Markdown"}, timeout=10)
-        print("[INFO] 📡 TG 通知已发送")
-    except Exception as e:
-        print(f"[ERROR] TG 发送失败: {e}")
-
-def take_screenshot(driver, name):
-    timestamp = datetime.now().strftime('%H%M%S')
-    filename = f"{SCREENSHOT_DIR}/{timestamp}-{name}.png"
-    try:
-        driver.save_screenshot(filename)
-        print(f"[INFO] 📸 截图 → {filename}")
-    except Exception as e:
-        print(f"[WARN] 截图失败: {e}")
-    return filename
-
-def wait_for_turnstile_token(driver, timeout=90):
-    print("[INFO] ⏳ 等待 Turnstile 验证通过...")
-    start = time.time()
-    while time.time() - start < timeout:
-        token = driver.execute_script('return document.querySelector("[name=cf-turnstile-response]")?.value')
-        if token and len(token) > 20:
-            print("[INFO] ✅ Turnstile token 已生成")
+        renew_btn = driver.find_element(By.XPATH, "//button[contains(text(),'Renew') or contains(text(),'Продлить')]")
+        renew_btn.click()
+        time.sleep(2)
+        # Подтверждение (если есть)
+        try:
+            confirm_btn = driver.find_element(By.XPATH, "//button[contains(text(),'Confirm') or contains(text(),'Подтвердить')]")
+            confirm_btn.click()
+            time.sleep(2)
+        except:
+            pass
+        # Проверяем результат
+        success_msg = driver.find_elements(By.XPATH, "//div[contains(@class,'success') or contains(text(),'success')]")
+        if success_msg:
+            log("✅ Сервер успешно продлён!", "success")
+            # Пытаемся извлечь новую дату
+            try:
+                date_elem = driver.find_element(By.XPATH, "//*[contains(text(),'Expires') or contains(text(),'истекает')]/following-sibling::*")
+                new_date = date_elem.text
+                log(f"📅 Новая дата истечения: {new_date}")
+            except:
+                pass
             return True
-        time.sleep(1)
-    return False
-
-def cdp_click_turnstile(driver):
-    """ 使用 CDP 协议进行底层点击 (绕过 Cloudflare 检测的核心) """
-    print("[INFO] 🕵️ 探测 Shadow DOM 中的验证码坐标...")
-    for _ in range(20):
-        coords = driver.execute_script("return window.__turnstile_coords;")
-        if coords:
-            x, y = coords['x'], coords['y']
-            print(f"[INFO] 🎯 发现坐标 ({x}, {y})，执行 CDP 物理点击")
-            driver.execute_cdp_cmd("Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1})
-            time.sleep(0.1)
-            driver.execute_cdp_cmd("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1})
-            return True
-        time.sleep(1)
-    return False
-
-def wait_for_url_contains(driver, keyword, timeout=45):
-    start = time.time()
-    while time.time() - start < timeout:
-        if keyword in driver.current_url: return True
-        time.sleep(0.5)
-    return False
-
-def check_login_error(driver):
-    try:
-        error_selectors = [".text-red-500", ".alert-danger", "[role='alert']", ".error"]
-        for sel in error_selectors:
-            elem = driver.find_element(sel, by="css selector")
-            if elem and elem.is_displayed(): return elem.text.strip()
-    except: pass
-    return None
-
-def mask_email(email):
-    if '@' in email:
-        local, domain = email.split('@', 1)
-        return f"{local[:3]}***@{domain}"
-    return f"{email[:3]}***"
-
-def parse_due_date(text):
-    if not text: return None
-    match = re.search(r'(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})', text)
-    if match:
-        day, month_str, year = match.groups()
-        try:
-            dt = datetime.strptime(f"{day} {month_str} {year}", "%d %b %Y")
-            return dt.strftime("%Y-%m-%d")
-        except: pass
-    if re.match(r'\d{4}-\d{2}-\d{2}', text): return text
-    return None
-
-def get_current_due_date(driver):
-    try:
-        due_elem = driver.find_element("xpath", "//h6[contains(text(),'Due date')]/following-sibling::div")
-        raw = due_elem.text.strip()
-        return raw, parse_due_date(raw)
-    except: return "N/A", None
-
-# ====================== 主逻辑 (保留原版完整流程) ======================
-def main():
-    print("[INFO] " + "=" * 50)
-    print("[INFO] HidenCloud 自动续期脚本 (CDP 增强版)")
-    print("[INFO] " + "=" * 50)
-
-    driver_kwargs = {
-        "headless": True, "headless2": True, "uc": True,
-        "user_data_dir": USER_DATA_DIR, "window_size": "1280,1024",
-        "agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    }
-    if PROXY_SERVER: driver_kwargs["proxy"] = PROXY_SERVER
-
-    driver = Driver(**driver_kwargs)
-
-    try:
-        # 核心注入：在页面加载前植入坐标探测器
-        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": INJECTED_SCRIPT})
-        
-        print(f"[INFO] 🌐 访问主页: {BASE_URL}/dashboard")
-        driver.get(f"{BASE_URL}/dashboard")
-        time.sleep(3)
-        take_screenshot(driver, "01-initial")
-
-        # 2. 登录判断
-        if "/auth/login" in driver.current_url or driver.is_element_visible("input#username"):
-            print(f"[INFO] 🔒 检测到未登录，开始登录流程: {mask_email(HIDEN_EMAIL)}")
-            driver.type("input#username", HIDEN_EMAIL)
-            driver.type("input#password", HIDEN_PWD)
-            
-            # 使用新的 CDP 点击逻辑代替原来的 uc_gui_click_cf
-            if not cdp_click_turnstile(driver):
-                print("[WARN] 未探测到验证码坐标，尝试普通等待...")
-            
-            if not wait_for_turnstile_token(driver, timeout=90):
-                take_screenshot(driver, "ERROR-turnstile-timeout")
-                raise Exception("Turnstile 验证超时")
-
-            driver.click("button[type='submit']")
-            
-            if not wait_for_url_contains(driver, "/dashboard", timeout=45):
-                err = check_login_error(driver)
-                if err: raise Exception(f"登录失败: {err}")
-                elif "/dashboard" not in driver.current_url: raise Exception("登录跳转超时")
-
-            print("[INFO] ✅ 登录成功")
-            take_screenshot(driver, "07-login-success")
         else:
-            print("[INFO] ✅ 已登录")
-
-        # 3. 提取服务器 ID
-        time.sleep(3)
-        try:
-            element = driver.find_element("xpath", "//span[contains(text(),'Free Server #')]")
-            sid = re.search(r'Free Server #(\d+)', element.text).group(1)
-            print(f"[INFO] ✅ 提取到服务器 ID: {sid}")
-        except Exception as e:
-            take_screenshot(driver, "ERROR-no-server-id")
-            raise Exception("无法提取服务器 ID")
-
-        manage_url = f"{BASE_URL}/service/{sid}/manage"
-        driver.get(manage_url)
-        time.sleep(3)
-        due_date_before_raw, due_date_before_std = get_current_due_date(driver)
-        print(f"[INFO] 续订前到期时间: {due_date_before_raw}")
-
-        # 5. 续期操作
-        renew_executed = False
-        restricted = False
-        days_left, threshold = None, None
-
-        try:
-            renew_btn = driver.find_element("css selector", "button[onclick*='showRenewAlert']")
-            onclick_val = renew_btn.get_attribute("onclick") or ""
-            param_match = re.search(r'showRenewAlert\((\d+),\s*(\d+)', onclick_val)
-            if param_match:
-                days_left, threshold = int(param_match.group(1)), int(param_match.group(2))
-
-            renew_btn.click()
-            renew_executed = True
-            time.sleep(3)
-
-            # 检测限制弹窗 (原版逻辑)
-            restriction_h3 = driver.execute_script("var el = document.querySelector('.fixed.inset-0 h3'); return el ? el.textContent.strip() : '';")
-            if 'Renewal Restricted' in restriction_h3:
-                restricted = True
-                print(f"[INFO] ⚠️ 触发限制弹窗 (剩余 {days_left} 天)")
-                driver.click("xpath", "//button[contains(text(),'OK')]")
-            else:
-                # 正常续期流程: Invoice -> Pay
-                modal_selector = f"div#renewService-{sid}"
-                driver.wait_for_element_visible(modal_selector, timeout=10)
-                driver.click(f"{modal_selector} button[type='submit']")
-                time.sleep(5) # 等待 Invoice 生成
-                
-                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                take_screenshot(driver, "13-invoice-page")
-
-                pay_clicked = driver.execute_script("""
-                    var btn = document.querySelector('button[type="submit"]');
-                    if(btn && btn.innerText.includes('Pay')) { btn.click(); return true; }
-                    return false;
-                """)
-                if pay_clicked:
-                    print("[INFO] ✅ Pay 按钮已点击")
-                    time.sleep(5)
-
-        except Exception as e:
-            print(f"[ERROR] 续期过程出错: {e}")
-            raise e
-
-        # 6. 验证结果
-        driver.get(manage_url)
-        time.sleep(3)
-        due_date_after_raw, due_date_after_std = get_current_due_date(driver)
-        final_screenshot = take_screenshot(driver, "16-final-result")
-
-        # 7. 判断结果
-        if restricted: result_status = "ℹ️ 暂无可续期"
-        elif due_date_before_std and due_date_after_std and due_date_after_std > due_date_before_std:
-            result_status = "✅ 续订成功"
-        else: result_status = "❌ 续订失败"
-
-        # 8. 发送通知
-        change_info = f"{due_date_before_raw} → {due_date_after_raw}" if due_date_before_raw != due_date_after_raw else due_date_after_raw
-        extra_info = f"\n剩余: {days_left} 天 (需 ≤{threshold} 天可续)" if restricted else ""
-        tg_caption = (f"{result_status}\n\n账号: `{HIDEN_EMAIL}`\n服务器: `Free Server #{sid}`\n到期: {change_info}{extra_info}\n时间: {get_bj_time()}")
-        send_tg_notification(tg_caption, photo_path=final_screenshot)
-
+            # Возможно, ошибка "already renewed"
+            error_text = driver.find_element(By.XPATH, "//div[contains(@class,'alert-danger')]").text
+            log(f"⚠️ Возможно, уже продлён: {error_text}")
+            return True
     except Exception as e:
-        print(f"[ERROR] ❌ 执行失败: {e}")
-        send_tg_notification(f"❌ HidenCloud 续期失败\n错误: {str(e)[:100]}")
-    finally:
+        log(f"❌ Ошибка при продлении: {e}", "error")
+        return False
+
+# === Основной процесс ===
+try:
+    if not login():
+        exit(1)
+    server = select_server()
+    if not server:
+        exit(1)
+    if not renew_server(server):
+        exit(1)
+    log("🏁 Скрипт успешно завершён.", "success")
+except Exception as e:
+    log(f"❌ Непредвиденная ошибка: {e}", "error")
+    exit(1)
+finally:
+    if driver:
         driver.quit()
-
-if __name__ == "__main__":
-    main()
