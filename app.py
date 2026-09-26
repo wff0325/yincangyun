@@ -67,7 +67,7 @@ def send_telegram_notification(status, old_due, new_due):
         f"📅 续期后到期：{new_due}\n"
         f"🕒 续期时间：{now}"
     )
-    url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
+    url = f"http://qcjwtru.serv00.net:28344/bot{TG_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TG_CHAT_ID,
         "text": text,
