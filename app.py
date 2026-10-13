@@ -85,7 +85,7 @@ def send_telegram_notification(status, old_due, new_due, current_ip="未知"):
         f"🌐 续期使用IP: {current_ip}\n"
         f"🕒 续期时间：{now}"
     )
-    url = f"http://qcjwtru.serv00.net:28344/bot{TG_BOT_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TG_CHAT_ID,
         "text": text,
@@ -554,6 +554,7 @@ def renew_service(page):
         handle_cloudflare(page)
 
         log("🖱️ 准备点击 Renew 按钮...")
+        time.sleep(3)
         renew_btn = page.locator('button:has-text("Renew")')
         create_btn = page.locator('button:has-text("Create Invoice")')
 
@@ -597,6 +598,7 @@ def renew_service(page):
             page.screenshot(path="turnstile_timeout.png")
 
         # 点击 Create Invoice；未跳转说明验证未通过/已过期，重做验证后再试
+        time.sleep(3)
         new_invoice_url = None
         for attempt in range(6):
             log(f"🖱️ 点击 'Create Invoice'（第 {attempt + 1} 次）...")
